@@ -91,7 +91,7 @@ func TestGetConfigFileDir(t *testing.T) {
 		}
 
 		// Call the function under test.
-		dir, actualResult := getConfigFileDir(configFiles)
+		dir, actualResult := getConfigFileDir(configFiles, "")
 		if dir != "" {
 			defer os.RemoveAll(dir)
 		}

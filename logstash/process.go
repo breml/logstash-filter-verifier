@@ -57,7 +57,7 @@ func NewProcess(logstashPath, inputCodec string, fields FieldSet, keptEnvVars []
 		return nil, err
 	}
 
-	configDir, err := getConfigFileDir(configs)
+	configDir, err := getConfigFileDir(configs, "")
 	if err != nil {
 		_ = logFile.Close()
 		_ = outputFile.Close()

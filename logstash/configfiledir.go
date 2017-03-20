@@ -33,10 +33,13 @@ func copyFile(sourcePath, destPath string) error {
 // that directory. Returns an error if any I/O error occurs but also
 // if the basenames of the configuration files aren't unique, i.e. if
 // they'd overwrite one another in the directory.
-func getConfigFileDir(configs []string) (string, error) {
-	dir, err := ioutil.TempDir("", "")
-	if err != nil {
-		return "", err
+func getConfigFileDir(configs []string, dir string) (string, error) {
+	var err error
+	if dir == "" {
+		dir, err = ioutil.TempDir("", "")
+		if err != nil {
+			return "", err
+		}
 	}
 
 	for _, f := range configs {

@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -136,6 +137,12 @@ type ParallelProcess struct {
 	child     *exec.Cmd
 	configDir *string
 	log       io.ReadCloser
+	live      bool
+
+	control         *net.UnixConn
+	controlListener *net.UnixListener
+	controlReady    chan struct{}
+	controlPath     string
 
 	stdio io.Reader
 }
@@ -144,68 +151,89 @@ type ParallelProcess struct {
 // doesn't actually start it. logstashPath is the path to the Logstash
 // executable (typically /opt/logstash/bin/logstash). The configs parameter is
 // one or more configuration files containing Logstash filters.
-func NewParallelProcess(logstashPath string, testStream []*TestStream, keptEnvVars []string, configs ...string) (*ParallelProcess, error) {
-	if len(configs) == 0 {
-		return nil, errors.New("must provide non-empty list of configuration file or directory names")
-	}
-
-	logstashInput := make([]string, len(testStream))
-	logstashOutput := make([]string, len(testStream))
-
-	for i, sp := range testStream {
-		sp.fields["@metadata"] = map[string]interface{}{"__lfv_testcase": strconv.Itoa(i)}
-		fieldHash, err := sp.fields.LogstashHash()
-		if err != nil {
-			CleanupTestStreams(testStream)
-			return nil, err
-		}
-		logstashInput[i] = fmt.Sprintf("unix { mode => \"client\" path => %q codec => %q add_field => %s }", sp.senderPath, sp.inputCodec, fieldHash)
-		logstashOutput[i] = fmt.Sprintf("if [@metadata][__lfv_testcase] == \"%s\" { file { path => %q codec => \"json_lines\" } }", strconv.Itoa(i), sp.receiver.Name())
-	}
-
+func NewParallelProcess(logstashPath string, keptEnvVars []string, live bool) (*ParallelProcess, error) {
 	logFile, err := newDeletedTempFile("", "")
 	if err != nil {
-		CleanupTestStreams(testStream)
 		return nil, err
 	}
 
-	configDir, err := getConfigFileDir(configs)
+	configDir, err := ioutil.TempDir("", "")
 	if err != nil {
-		CleanupTestStreams(testStream)
 		_ = logFile.Close()
 		return nil, err
 	}
+
+	/*
+		ts := &TestStream{
+			senderReady: make(chan struct{}),
+			senderPath:  filepath.Join(dir, "socket"),
+			inputCodec:  inputCodec,
+			fields:      fields,
+			timeout:     timeout,
+		}
+
+		ts.senderListener, err = net.ListenUnix("unix", &net.UnixAddr{Name: ts.senderPath, Net: "unix"})
+		if err != nil {
+			log.Fatalf("Unable to create unix socket for listening: %s", err)
+		}
+		ts.senderListener.SetUnlinkOnClose(false)
+
+		go func() {
+			defer close(ts.senderReady)
+
+			ts.sender, err = ts.senderListener.AcceptUnix()
+			if err != nil {
+				log.Errorf("Error while accept unix socket: %s", err)
+			}
+			ts.senderListener.Close()
+		}()
+
+		logstashInput[i] = fmt.Sprintf("unix { mode => \"client\" path => %q codec => %q add_field => %s }", sp.senderPath, sp.inputCodec, fieldHash)
+		logstashOutput[i] = fmt.Sprintf("if [@metadata][__lfv_testcase] == \"%s\" { file { path => %q codec => \"json_lines\" } }", strconv.Itoa(i), sp.receiver.Name())
+
+		log.Debug("input.conf", strings.Join(logstashInput, "\n"))
+		err = ioutil.WriteFile(configDir+"input.conf", "input { unix { path => "" } }"), 0660)
+		if err != nil {
+			CleanupTestStreams(testStream)
+			_ = p.log.Close()
+			return err
+		}
+
+		log.Debug("output.conf", strings.Join(logstashOutput, "\n"))
+		err = ioutil.WriteFile(configDir+"output.conf", []byte(strings.Join(logstashOutput, "\n")), 0660)
+		if err != nil {
+			CleanupTestStreams(testStream)
+			_ = p.log.Close()
+			return err
+		}
+	*/
 
 	args := []string{
 		"-w", // Make messages arrive in order.
 		"1",
 		"--debug",
-		"-e",
-		fmt.Sprintf(
-			"input { %s } "+
-				"output { %s }",
-			strings.Join(logstashInput, " "), strings.Join(logstashOutput, " ")),
+		"-r", // Monitor config and reload
+		"--reload-interval",
+		"86400", // We do not actually want to reload the config automatically, we send the HUP signal when ever a reload should be performed
 		"-f",
 		configDir,
 		"-l",
 		logFile.Name(),
 	}
 
-	p, err := newParallelProcessWithArgs(logstashPath, args, getLimitedEnvironment(os.Environ(), keptEnvVars))
+	p, err := newParallelProcessWithArgs(logstashPath, args, getLimitedEnvironment(os.Environ(), keptEnvVars), live)
 	if err != nil {
-		CleanupTestStreams(testStream)
 		_ = logFile.Close()
 	}
 	p.configDir = &configDir
 	p.log = logFile
-	p.streams = testStream
 	return p, nil
 }
 
 // newParallelProcessWithArgs performs the non-Logstash specific low-level
 // actions of preparing to spawn a child process, making it easier to
 // test the code in this package.
-func newParallelProcessWithArgs(command string, args []string, env []string) (*ParallelProcess, error) {
+func newParallelProcessWithArgs(command string, args []string, env []string, live bool) (*ParallelProcess, error) {
 	c := exec.Command(command, args...)
 	c.Env = env
 
@@ -219,6 +247,7 @@ func newParallelProcessWithArgs(command string, args []string, env []string) (*P
 	return &ParallelProcess{
 		child: c,
 		stdio: &b,
+		live:  live,
 	}, nil
 }
 
@@ -226,18 +255,80 @@ func newParallelProcessWithArgs(command string, args []string, env []string) (*P
 // configuration.
 func (p *ParallelProcess) Start() error {
 	log.Info("Starting %q with args %q.", p.child.Path, p.child.Args[1:])
+	// TODO: Start controller goroutine
 	return p.child.Start()
+}
+
+// SetConfig provides config and test cases for ParallelProcess
+func (p *ParallelProcess) SetConfig(testStream []*TestStream, configs ...string) error {
+	log.Info("SetConfig")
+	if len(configs) == 0 {
+		return errors.New("must provide non-empty list of configuration file or directory names")
+	}
+
+	logstashInput := make([]string, len(testStream))
+	logstashOutput := make([]string, len(testStream))
+
+	for i, sp := range testStream {
+		sp.fields["@metadata"] = map[string]interface{}{"__lfv_testcase": strconv.Itoa(i)}
+		fieldHash, err := sp.fields.LogstashHash()
+		if err != nil {
+			CleanupTestStreams(testStream)
+			return err
+		}
+		logstashInput[i] = fmt.Sprintf("unix { mode => \"client\" path => %q codec => %q add_field => %s }", sp.senderPath, sp.inputCodec, fieldHash)
+		logstashOutput[i] = fmt.Sprintf("if [@metadata][__lfv_testcase] == \"%s\" { file { path => %q codec => \"json_lines\" } }", strconv.Itoa(i), sp.receiver.Name())
+	}
+
+	_, err := getConfigFileDir(configs, *p.configDir)
+	if err != nil {
+		CleanupTestStreams(testStream)
+		_ = p.log.Close()
+		return err
+	}
+
+	log.Debug("input.conf", strings.Join(logstashInput, "\n"))
+	err = ioutil.WriteFile(*p.configDir+"input.conf", []byte(strings.Join(logstashInput, "\n")), 0660)
+	if err != nil {
+		CleanupTestStreams(testStream)
+		_ = p.log.Close()
+		return err
+	}
+
+	log.Debug("output.conf", strings.Join(logstashOutput, "\n"))
+	err = ioutil.WriteFile(*p.configDir+"output.conf", []byte(strings.Join(logstashOutput, "\n")), 0660)
+	if err != nil {
+		CleanupTestStreams(testStream)
+		_ = p.log.Close()
+		return err
+	}
+
+	p.streams = testStream
+
+	// TODO: Find a better solution for the tests to work, e.g. wait for message on control channel
+	time.Sleep(20 * time.Second)
+
+	p.Signal(syscall.SIGHUP)
+
+	return nil
 }
 
 // Wait blocks until the started Logstash process terminates and
 // returns the result of the execution.
 func (p *ParallelProcess) Wait() (*ParallelResult, error) {
+	var waiterr error
+
 	if p.child.Process == nil {
 		return nil, errors.New("can't wait on an unborn process")
 	}
-	log.Debug("Waiting for child with pid %d to terminate.", p.child.Process.Pid)
+	if p.live {
+		log.Debug("Wait for 'finish' signal on control channel")
+		os.Exit(255)
+	} else {
+		log.Debug("Waiting for child with pid %d to terminate.", p.child.Process.Pid)
 
-	waiterr := p.child.Wait()
+		waiterr = p.child.Wait()
+	}
 
 	// Save the log output regardless of whether the child process
 	// succeeded or not.
@@ -288,6 +379,14 @@ func (p *ParallelProcess) Wait() (*ParallelResult, error) {
 		}
 	}
 	return &result, err
+}
+
+// Signal sends a signal to the connected child process
+func (p *ParallelProcess) Signal(sig os.Signal) {
+	for p.child.Process == nil {
+		fmt.Println("Can't signal to an unborn process!")
+	}
+	p.child.Process.Signal(sig)
 }
 
 // Release frees all allocated resources connected to this process.

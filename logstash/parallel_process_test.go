@@ -25,7 +25,7 @@ func TestParallelProcess(t *testing.T) {
 	}
 	configPaths := []string{file.Name()}
 
-	p, err := NewParallelProcess(os.Args[0], []*TestStream{ts}, []string{}, configPaths...)
+	p, err := NewParallelProcess(os.Args[0], []string{}, false)
 	if err != nil {
 		t.Fatalf("Unable to create ParallelProcess: %s", err)
 	}
@@ -36,10 +36,14 @@ func TestParallelProcess(t *testing.T) {
 	if err = p.Start(); err != nil {
 		t.Fatalf("Unable to start ParallelProcess: %s", err)
 	}
+	err = p.SetConfig([]*TestStream{ts}, configPaths...)
+	if err != nil {
+		t.Fatalf("Unable to SetConfig on ParallelProcess: %s", err)
+	}
 
 	_, err = ts.Write([]byte(testLine))
 	if err != nil {
-		t.Fatalf("Unable to wirte to TestStream: %s", err)
+		t.Fatalf("Unable to write to TestStream: %s", err)
 	}
 	if err = ts.Close(); err != nil {
 		t.Fatalf("Unable to close TestStream: %s", err)

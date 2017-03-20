@@ -44,6 +44,10 @@ var (
 			Flag("sockets", "Use Unix domain sockets for the communication with Logstash.").
 			Default("false").
 			Bool()
+	liveUpdate = kingpin.
+			Flag("live", "Let logstash-filter-verifier run as daemon, which watches the config directories for changes and performes a live config update in Logstash (this setting implies --sockets)").
+			Default("false").
+			Bool()
 	logstashOutput = kingpin.
 			Flag("logstash-output", "Print the debug output of logstash.").
 			Default("false").
@@ -125,7 +129,7 @@ const unixSocketCommTimeout = 60 * time.Second
 // instance of Logstash against a slice of test cases and compares
 // the actual events against the expected set. Returns an error if
 // at least one test case fails or if there's a problem running the tests.
-func runParallelTests(logstashPath string, tests []testcase.TestCaseSet, configPaths []string, diffCommand []string, keptEnvVars []string) error {
+func runParallelTests(logstashPath string, tests []testcase.TestCaseSet, configPaths []string, diffCommand []string, keptEnvVars []string, liveUpdate bool) error {
 	var testStreams []*logstash.TestStream
 
 	for _, t := range tests {
@@ -137,7 +141,9 @@ func runParallelTests(logstashPath string, tests []testcase.TestCaseSet, configP
 		testStreams = append(testStreams, ts)
 	}
 
-	p, err := logstash.NewParallelProcess(logstashPath, testStreams, keptEnvVars, configPaths...)
+	// TODO: For live mode, no config (special config which only includes control channel)
+	// and testCases is provided to start Logstash
+	p, err := logstash.NewParallelProcess(logstashPath, keptEnvVars, liveUpdate)
 	if err != nil {
 		return err
 	}
@@ -146,6 +152,12 @@ func runParallelTests(logstashPath string, tests []testcase.TestCaseSet, configP
 		return err
 	}
 
+	err = p.SetConfig(testStreams, configPaths...)
+	if err != nil {
+		return nil
+	}
+
+	// TODO: not only send test data here, but also change config of Logstash (Input, Output, Filter)
 	for i, t := range tests {
 		for _, line := range t.InputLines {
 			_, err = testStreams[i].Write([]byte(line + "\n"))
@@ -238,13 +250,16 @@ func main() {
 		userError(err.Error())
 		os.Exit(1)
 	}
+	if *liveUpdate {
+		*unixSockets = true
+	}
 	if *unixSockets {
 		if runtime.GOOS == "windows" {
 			userError("Use of Unix domain sockets for communication with Logstash is not supported on Windows.")
 			os.Exit(1)
 		}
 		fmt.Println("Use Unix domain sockets.")
-		if err = runParallelTests(*logstashPath, tests, *configPaths, diffCmd, *keptEnvVars); err != nil {
+		if err = runParallelTests(*logstashPath, tests, *configPaths, diffCmd, *keptEnvVars, *liveUpdate); err != nil {
 			userError(err.Error())
 			os.Exit(1)
 		}
