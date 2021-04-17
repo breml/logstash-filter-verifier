@@ -45,6 +45,12 @@ type TestCaseSet struct {
 	// events are read. This is normally "line" or "json_lines".
 	Codec string `json:"codec" yaml:"codec"`
 
+	// DisableInputEscaping allows to disable the Logstash escaping according to
+	// https://www.elastic.co/guide/en/logstash/current/configuration-file-structure.html#_escape_sequences
+	// By default, the escaping is enabled. If DisableInputEscaping is set to
+	// true, the InputLines are no longer escaped.
+	DisableInputEscaping bool `json:"disable_input_escaping" yaml:"disable_input_escaping"`
+
 	// IgnoredFields contains a list of fields that will be
 	// deleted from the events that Logstash returns before
 	// they're compared to the events in ExpectedEevents.

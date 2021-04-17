@@ -10,6 +10,7 @@ import (
 
 const logstashConfig = `
 pipeline.unsafe_shutdown: true
+# config.support_escapes: true
 `
 
 // TODO: Why is Logstash still printing

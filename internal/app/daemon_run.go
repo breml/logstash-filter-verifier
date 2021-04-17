@@ -17,15 +17,23 @@ func makeDaemonRunCmd() *cobra.Command {
 
 	cmd.Flags().StringP("pipeline", "p", "", "location of the pipelines.yml file to be processed")
 	_ = viper.BindPFlag("pipeline", cmd.Flags().Lookup("pipeline"))
+
 	cmd.Flags().String("pipeline-base", "", "base directory for relative paths in the pipelines.yml")
 	_ = viper.BindPFlag("pipeline-base", cmd.Flags().Lookup("pipeline-base"))
+
 	cmd.Flags().StringP("testcase-dir", "t", "", "directory containing the test case files")
 	_ = viper.BindPFlag("testcase-dir", cmd.Flags().Lookup("testcase-dir"))
+
 	cmd.Flags().String("filter-mock", "", "path to a yaml file containing the definition for the filter mocks.")
 	_ = viper.BindPFlag("filter-mock", cmd.Flags().Lookup("filter-mock"))
+
 	cmd.Flags().Bool("debug", false, "enable debug mode; e.g. prevents stripping '__lfv' data from Logstash events")
 	_ = viper.BindPFlag("debug", cmd.Flags().Lookup("debug"))
+
 	cmd.Flags().String("metadata-key", "@metadata", "Key under which the content of the `@metadata` field is exposed in the returned events.")
+	_ = viper.BindPFlag("metadata-key", cmd.Flags().Lookup("metadata-key"))
+
+	cmd.Flags().Bool("disable-auto-escaping", false, "By default, Logstash strings are automatically escaped. This flag allows to disable this behavior.")
 	_ = viper.BindPFlag("metadata-key", cmd.Flags().Lookup("metadata-key"))
 
 	return cmd
